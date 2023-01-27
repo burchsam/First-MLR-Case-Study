@@ -1,0 +1,511 @@
+---
+title: "STAT 425 Case Study 1"
+author: "Zachary Ryan (zmryan2) & Sam Burch (sgburch2)"
+date: "2022-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preliminary 
+```{r}
+cdi = read.csv('CDI.txt', header = FALSE, sep='')
+
+head(cdi)
+dim(cdi)
+
+names(cdi) = c('id', 'county', 'state', 'land_area', 'pop', 'pop_rate_young',
+               'pop_rate_old', 'active_physicians', 'hospital_beds',
+               'serious_crimes', 'hs_grad_rate', 'bachelor_deg_rate',
+               'below_poverty_rate', 'unemployment_rate', 'per_cap_income',
+               'personal_income', 'geo_region')
+head(cdi)
+dim(cdi)
+```
+
+
+# Pre-Testing
+```{r}
+cdi$hospital_beds_rate = cdi$hospital_beds/cdi$pop
+cdi$serious_crimes_rate = cdi$serious_crimes/cdi$pop
+cdi = cdi[, -c(9, 10)]
+
+df_1 = cdi[-c(1, 2, 3)]
+
+cor(df_1[, -5])
+```
+
+We created rate metrics for beds and crimes by dividing them by pop.
+
+Personal income high correlation with pop (0.987), small correlation with others. We will remove pop since it was also used to create the hospital beds and serious crimes rate variables.
+Leave county, state out because the same info in geo_region
+```{r}
+df_1 = df_1[,-2]
+
+cor(df_1[, -4])
+```
+
+Now that all correlations are under absolute value of 0.9 we should be able to start doing testing-based model selection without collinearity impacting the p-values.
+
+
+# Initial Testing-Based Model Selection
+```{r}
+mlr_full = lm(active_physicians ~ ., df_1)
+summary(mlr_full)
+```
+Individual t-test show bachelor_deg_rate, personal_income, and hospital_beds_rate to be statistically significant, with $\alpha$ = .05. The F-test shows p-value of ~0, which leads to the conclusion that at least one $\beta$ is not equal to 0. Note that land_area, pop_rate_young, hs_grad_rate, and below_poverty_rate have relatively low p-values. Also, the most significant are personal_income, and hospital_beds_rate (with p-values ~0)
+
+
+Let's now consider a model where only the predictors mentioned above are used.
+```{r}
+mlr_red_1 = lm(active_physicians ~ land_area + pop_rate_young + 
+                 hs_grad_rate + bachelor_deg_rate +
+                 below_poverty_rate + personal_income + hospital_beds_rate, 
+               data=df_1)
+summary(mlr_red_1)
+anova(mlr_red_1, mlr_full)
+```
+Here, our null stated the reduced model is adequate, while the alternate stated it is not. With a p-value of .97 >>> $\alpha$ = .05 (much greater), we can say the reduced model (mlr_red_1) is adequate!
+
+
+Now, let's take this one step further and only use the predictors that had a p-value < 0.1.
+```{r}
+mlr_red_2 = lm(active_physicians ~ bachelor_deg_rate + personal_income
+               + below_poverty_rate + hospital_beds_rate + pop_rate_young,
+               data=df_1)
+summary(mlr_red_2)
+anova(mlr_red_2, mlr_red_1)
+anova(mlr_red_2, mlr_full)
+```
+Here, both nulls state the reduced model (mlr_red_2) is adequate, while the alternates state it is not. With both partial F-tests producing p-values higher than $\alpha$ = 0.05, we can conclude mlr_red_2 is adequate compared to the prior two models.
+
+
+Finally we will test out removing pop_rate_young which had a p-value of 0.08>$\alpha$=0.05
+```{r}
+mlr_red_3 = lm(active_physicians ~ bachelor_deg_rate + personal_income
+               + below_poverty_rate + hospital_beds_rate,
+               data=df_1)
+summary(mlr_red_3)
+anova(mlr_red_3, mlr_red_2)
+```
+Here, the null states the reduced model (mlr_red_3) is adequate, while the alternate states it is not (pop_rate_young is required). With the p-value 0.084 greater than $\alpha$ = .05, we can say the reduced model (mlr_red_3) is adequate when compared to mlr_red_2! Thus, this is the best model out of the 4 models we tested. 
+
+# Unusual Observations
+## High Leverage Points (HLPs)
+```{r}
+cdi.leverages = lm.influence(mlr_red_3)$hat
+head(cdi.leverages)
+
+library(faraway)
+halfnorm(cdi.leverages, nlab=6, labs=as.character(1:length(cdi.leverages)), ylab="Leverages")
+
+n = dim(cdi)[1];
+p = length(variable.names(mlr_red_3));
+(2*p/n)
+
+cdi.leverages.high = cdi.leverages[cdi.leverages > (2*p/n)]
+(cdi.leverages.high = sort(abs(cdi.leverages.high), decreasing = TRUE))
+length(cdi.leverages.high)
+```
+This tells us there are 30 HLPs.
+
+Trying to find Good vs Bad HLPs:
+```{r}
+IQR_ap = IQR(cdi$active_physicians)
+
+QT1_ap = quantile(cdi$active_physicians, .25)
+QT3_ap = quantile(cdi$active_physicians, .75)
+
+lower_lim = QT1_ap - IQR_ap
+upper_lim = QT3_ap + IQR_ap
+
+vector_lim = c(lower_lim, upper_lim)
+vector_lim
+
+cdi.highlev = cdi[cdi.leverages > (2*p/n), ]
+
+cdi.highlev_lower = cdi.highlev[cdi.highlev$active_physicians < vector_lim[1], ]
+cdi.highlev_upper = cdi.highlev[cdi.highlev$active_physicians > vector_lim[2], ]
+cdi.highlev2 = rbind(cdi.highlev_lower, cdi.highlev_upper)
+cdi.highlev2
+nrow(cdi.highlev2)
+```
+13 of the 30 are Bad HLPs.
+
+
+## Outliers
+```{r}
+cdi.resid = rstudent(mlr_red_3)
+
+bonferroni_cv = qt(.05/(2*n), n-p-1)
+bonferroni_cv
+
+cdi.resid.sorted = sort(abs(cdi.resid), decreasing = TRUE)[1:10]
+print(cdi.resid.sorted)
+
+cdi.outliers = cdi.resid.sorted[abs(cdi.resid.sorted) > abs(bonferroni_cv)]
+print(cdi.outliers)
+```
+4 outliers.
+
+
+## Highly Influential Points (HIPs)
+
+```{r}
+cdi.cooks = cooks.distance(mlr_red_3)
+sort(cdi.cooks, decreasing = TRUE)[1:10]
+
+plot(cdi.cooks)
+halfnorm(cdi.cooks, 6, labs=as.character(1:length(cdi.cooks)), ylab="Cook's distances")
+```
+
+No HIPs because CD < 1.
+
+
+
+# Checking Model Assumptions
+## Constant Variance
+```{r}
+plot(mlr_red_3, which = 1)
+library(lmtest)
+bptest(mlr_red_3)
+```
+Constant variance is NOT satisfied --> TRANSFORM
+
+
+## Normality
+```{r}
+plot(mlr_red_3, which = 2)
+
+hist(mlr_red_3$residuals)
+
+ks.test(mlr_red_3$residuals, y = 'pnorm')
+```
+Normal assumption not satisfied --> TRANSFORM
+
+We will perform further diagnostics after attempting transformations to satisfy the constant variance/normality assumptions
+
+# Box-Cox Transformation
+```{r}
+library(MASS)
+bc_full = boxcox(mlr_red_3, lambda=seq(-2,2, length=400))
+lambda <- bc_full$x[which.max(bc_full$y)]
+lambda
+```
+For better interpretability, we will choose lambda of 0 (Y=log(Y))
+```{r}
+df_2 = df_1
+df_2$active_physicians = log(df_2$active_physicians)
+
+mlr_full_bc = lm(active_physicians ~ ., 
+               data=df_2)
+```
+## Re-testing Assumptions After Box-Cox Transformation
+
+### Constant Variance
+```{r}
+plot(mlr_full_bc, which = 1)
+
+bptest(mlr_full_bc)
+```
+Constant variance is still NOT satisfied --> TRANSFORM
+
+### Normality
+```{r}
+plot(mlr_full_bc, which = 2)
+
+hist(mlr_full_bc$residuals)
+
+ks.test(mlr_full_bc$residuals, y = 'pnorm')
+```
+Normal assumption not satisfied --> The Box-Cox transformation failed to fix the deviation from the normality assumption, so we will instead attempt to fix the Constant Variance Assumption with a variance stabilizing transformation.
+
+
+# Variance Stabilizing Transformation
+```{r}
+plot(x=fitted(mlr_red_3),y=(residuals(mlr_red_3))^2)
+```
+
+Since our box-cox transformation was already a log(Y) transformation, and the squared residuals vs fitted values plot does not show a linear relationship, we will try to use the 1/Y transformation to stabilize variance.
+```{r}
+df_3 = df_1
+df_3$active_physicians = 1/(df_3$active_physicians)
+
+mlr_full_vs = lm(active_physicians ~ ., 
+                  data=df_3)
+```
+## Re-testing Assumptions After Variance Stabilizing Transformation
+
+### Constant Variance
+```{r}
+plot(mlr_full_vs, which = 1)
+
+bptest(mlr_full_vs)
+```
+Constant variance is satisfied based on the Breusch-Pagan Test since p-val=0.265>0.05. Will note that the residual plot does not look ideal, so there may still be some issue with homoscedasticity or other assumptions in the model.
+
+### Normality
+```{r}
+plot(mlr_full_vs, which = 2)
+
+hist(mlr_full_vs$residuals)
+
+ks.test(mlr_full_vs$residuals, y = 'pnorm')
+```
+Normal assumption not satisfied --> Will need to note this, but since Box-Cox transformation did not work, we can't do anything to solve this issue
+
+# Model Selection After Variance Stabilizing Transformation
+```{r}
+summary(mlr_full_vs)
+```
+Individual t-test show land_area, pop_rate_old, bachelor_deg_rate, per_cap_income, personal_income, hospital_beds_rate, and serial_crimes_rate to be statistically significant, with alpha = .05. The F-test shows p-value of ~0, which leads to the conclusion that at least one $\beta$ is not equal to 0. Note that hs_grad_rate has a relatively low p-value close to 0.05. 
+
+
+Consider a model with only relatively low p-values
+```{r}
+mlr_red_1_vs = lm(active_physicians ~ land_area + pop_rate_old + 
+                 hs_grad_rate + bachelor_deg_rate +
+                 per_cap_income + personal_income + 
+                 hospital_beds_rate + serious_crimes_rate , 
+               data=df_3)
+summary(mlr_red_1_vs)
+
+n.iter = 2000;
+fstats = numeric(n.iter); 
+for(i in 1:n.iter){
+  new_df_3 = df_3;
+  
+  new_df_3[, c(2,7,8,11)] = df_3[sample(440), c(2,7,8,11)]; 
+  
+  model = lm(active_physicians ~ ., data = new_df_3);
+  fstats[i] = summary(model)$fstat[1] 
+}
+length(fstats[fstats > summary(mlr_full_vs)$fstat[1]])/n.iter
+```
+For the permutation test, our null states the reduced model is adequate, while the alternate states it is not. With a p-value much greater than >>> a = .05 (much greater), we can say the reduced model (mlr_red_1_vs) is adequate! 
+
+
+Only using the predictors that had a p-value < $\alpha$ = .05 (all except hs_grad_rate).
+```{r}
+mlr_red_2_vs =lm(active_physicians ~ land_area + pop_rate_old 
+                 + bachelor_deg_rate + per_cap_income + personal_income 
+                 + hospital_beds_rate + serious_crimes_rate, data=df_3)
+summary(mlr_red_2_vs)
+
+n.iter = 2000;
+fstats = numeric(n.iter); 
+for(i in 1:n.iter){
+  new_df_3 = df_3;
+  
+  new_df_3[, c(2,5,7,8,11)] = df_3[sample(440), c(2,5,7,8,11)]; 
+  
+  model = lm(active_physicians ~ ., data = new_df_3);
+  fstats[i] = summary(model)$fstat[1] 
+}
+length(fstats[fstats > summary(mlr_full_vs)$fstat[1]])/n.iter
+```
+Here, the permutation test produces a p-value of 0.399 > 0.05, so the reduced model (mlr_red_2_vs) is adequate. 
+Since we have ensured the model is adequate with permutation tests and each predictor is statistically significant (p-val<0.05) with the T-tests from the summary, mlr_red_2 is our final model.
+
+# Checking Unusual Observations again after Transformation and Model Selection
+## High Leverage Points (HLPs)
+```{r}
+cdi.leverages = lm.influence(mlr_red_2_vs)$hat
+head(cdi.leverages)
+
+halfnorm(cdi.leverages, nlab=6, labs=as.character(1:length(cdi.leverages)), ylab="Leverages")
+
+n = dim(cdi)[1];
+p = length(variable.names(mlr_red_2_vs));
+(2*p/n)
+
+cdi.leverages.high = cdi.leverages[cdi.leverages > (2*p/n)]
+(cdi.leverages.high = sort(abs(cdi.leverages.high), decreasing = TRUE))
+length(cdi.leverages.high)
+```
+This tells us there are 37 HLPs.
+
+Trying to find Good vs Bad HLPs:
+```{r}
+IQR_ap = IQR(df_3$active_physicians)
+
+QT1_ap = quantile(df_3$active_physicians, .25)
+QT3_ap = quantile(df_3$active_physicians, .75)
+
+lower_lim = QT1_ap - IQR_ap
+upper_lim = QT3_ap + IQR_ap
+
+vector_lim = c(lower_lim, upper_lim)
+vector_lim
+
+cdi.highlev = df_3[cdi.leverages > (2*p/n), ]
+
+cdi.highlev_lower = cdi.highlev[cdi.highlev$active_physicians < vector_lim[1], ]
+cdi.highlev_upper = cdi.highlev[cdi.highlev$active_physicians > vector_lim[2], ]
+cdi.highlev2 = rbind(cdi.highlev_lower, cdi.highlev_upper)
+cdi.highlev2
+nrow(cdi.highlev2)
+```
+1 of the 37 are Bad HLPs.
+
+
+## Outliers
+```{r}
+cdi.resid = rstudent(mlr_red_2_vs)
+
+bonferroni_cv = qt(.05/(2*n), n-p-1)
+bonferroni_cv
+
+cdi.resid.sorted = sort(abs(cdi.resid), decreasing = TRUE)[1:10]
+print(cdi.resid.sorted)
+
+cdi.outliers = cdi.resid.sorted[abs(cdi.resid.sorted) > abs(bonferroni_cv)]
+print(cdi.outliers)
+```
+2 outliers.
+
+ 
+## Highly Influential Points (HIPs)
+```{r}
+cdi.cooks = cooks.distance(mlr_red_2_vs)
+sort(cdi.cooks, decreasing = TRUE)[1:10]
+
+plot(cdi.cooks)
+halfnorm(cdi.cooks, 6, labs=as.character(1:length(cdi.cooks)), ylab="Cook's distances")
+```
+1 Highly Influential Point (observation 1 with CD = 1.63 > 1)
+
+
+None of the observations are outliers, bad HLPs, AND HIPs, and we have no access to an industry expert. So we will NOT drop these observations.
+
+
+# Re-testing Assumptions After Variance Stabilizing Transformation and Model Selection
+
+## Constant Variance
+```{r}
+plot(mlr_red_2_vs, which = 1)
+
+bptest(mlr_red_2_vs)
+```
+Constant variance is satisfied based on the Breusch-Pagan Test since p-val=0.06>0.05 = $\alpha$
+Will note that the residual plot still does not look ideal, so there may still be some issue with homoscedasticity or other assumptions in the model.
+
+## Normality
+```{r}
+plot(mlr_red_2_vs, which = 2)
+
+hist(mlr_red_2_vs$residuals)
+
+ks.test(mlr_red_2_vs$residuals, y = 'pnorm')
+```
+Normal assumption still not satisfied --> Will need to note this, but since Box-Cox transformation did not work, we can't do anything to solve this issue.
+
+## Linearity Assumption
+```{r}
+summary(mlr_red_2_vs)
+y.land_area = update(mlr_red_2_vs, .~. -land_area)$res
+x.land_area = lm(land_area ~ pop_rate_old + bachelor_deg_rate 
+                 + per_cap_income + personal_income + hospital_beds_rate 
+                 + serious_crimes_rate, data = df_3)$res
+plot(x.land_area, y.land_area, xlab="land_area Residuals", 
+     ylab="Active Physicians Residuals", col='Darkblue', pch=3, size=3)
+abline(lm(y.land_area ~ x.land_area), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.pop_rate_old = update(mlr_red_2_vs, .~. -pop_rate_old)$res
+x.pop_rate_old = lm(pop_rate_old ~ land_area + bachelor_deg_rate 
+                    + per_cap_income + personal_income 
+                    + hospital_beds_rate + serious_crimes_rate, 
+                    data = df_3)$res
+plot(x.pop_rate_old, y.pop_rate_old, xlab="pop_rate_old Residuals",
+     ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.pop_rate_old ~ x.pop_rate_old), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.bachelor_deg_rate = update(mlr_red_2_vs, .~. -bachelor_deg_rate)$res
+x.bachelor_deg_rate = lm(bachelor_deg_rate ~ land_area + pop_rate_old 
+                        + per_cap_income + personal_income + hospital_beds_rate
+                        + serious_crimes_rate, data = df_3)$res
+plot(x.bachelor_deg_rate, y.bachelor_deg_rate, 
+     xlab="bachelor_deg_rate Residuals",
+     ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.bachelor_deg_rate ~ x.bachelor_deg_rate), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.per_cap_income  = update(mlr_red_2_vs, .~. -per_cap_income)$res
+x.per_cap_income  = lm(per_cap_income  ~ land_area + pop_rate_old 
+                       + bachelor_deg_rate + personal_income 
+                       + hospital_beds_rate + serious_crimes_rate, 
+                       data = df_3)$res
+plot(x.per_cap_income, y.per_cap_income, xlab="per_cap_income Residuals",
+     ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.per_cap_income  ~ x.per_cap_income ), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.personal_income = update(mlr_red_2_vs, .~. -personal_income)$res
+x.personal_income = lm(personal_income ~ land_area + pop_rate_old
+                       + bachelor_deg_rate + per_cap_income 
+                       + hospital_beds_rate + serious_crimes_rate, 
+                       data = df_3)$res
+plot(x.personal_income, y.personal_income, xlab="personal_income Residuals", 
+     ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.personal_income ~ x.personal_income), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.hospital_beds_rate = update(mlr_red_2_vs, .~. -hospital_beds_rate)$res
+x.hospital_beds_rate = lm(hospital_beds_rate ~ land_area + pop_rate_old 
+                          + bachelor_deg_rate + per_cap_income 
+                          + personal_income + serious_crimes_rate, 
+                          data = df_3)$res
+plot(x.hospital_beds_rate, y.hospital_beds_rate, 
+     xlab="hospital_beds_rate Residuals", ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.hospital_beds_rate ~ x.hospital_beds_rate), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+
+y.serious_crimes_rate = update(mlr_red_2_vs, .~. -serious_crimes_rate)$res
+x.serious_crimes_rate = lm(serious_crimes_rate ~ land_area + pop_rate_old 
+                           + bachelor_deg_rate + per_cap_income 
+                           + personal_income + hospital_beds_rate, 
+                           data = df_3)$res
+plot(x.serious_crimes_rate, y.serious_crimes_rate, xlab="serious_crimes_rate Residuals", ylab="Active Physicians Residuals",
+     col='Darkblue', pch=3, size=3)
+abline(lm(y.serious_crimes_rate ~ x.serious_crimes_rate), col='Darkblue', lwd=2)
+abline(v = 0, col="red", lty=3)
+abline(h = 0, col="red", lty=3)
+```
+
+Since all of the plots show points approximately randomly scattered around the regression line, we can conclude that the linearity assumption is satisfied for the chosen model (mlr_red_2_vs). If we were to pick which predictors most likely have nonlinear relationship with active physicians they would be personal income and land area due to the way the points are clustered.
+
+## Collinearity
+```{r}
+x = model.matrix(mlr_red_2_vs)[,-1]
+dim(x)
+
+x = x - matrix(apply(x,2, mean), 440, 7, byrow=TRUE)
+x = x / matrix(apply(x, 2, sd), 440, 7, byrow=TRUE)
+
+eigenvalues.x = eigen(t(x) %*% x) 
+eigenvalues.x$val
+
+sqrt(eigenvalues.x$val[1]/eigenvalues.x$val[7])
+```
+Since the condition number 3,18<30, we can conclude there is not significant collinearity in our chosen model.
+
+
+
+
+
+
